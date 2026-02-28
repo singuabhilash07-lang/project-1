@@ -64,7 +64,9 @@ If you run into authentication errors, check container logs with:
 ```bash
 cd .. # workspace root
 docker-compose logs backend
-```Frontend (minimal Vite setup):
+```
+
+Frontend (minimal Vite setup):
 
 ```bash
 cd frontend
