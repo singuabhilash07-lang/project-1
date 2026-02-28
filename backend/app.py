@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from flask_socketio import SocketIO, join_room
 from flask_cors import CORS
 from flask_mail import Mail, Message
 from models import users, items
@@ -10,9 +11,14 @@ import difflib
 
 load_dotenv()
 
+# create Flask app early
 app = Flask(__name__)
+
 # allow all origins for API; simple development CORS
 CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+# initialize Socket.IO
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Email setup - read configuration from environment variables
 app.config['MAIL_SERVER'] = os.getenv("MAIL_SERVER", "smtp.gmail.com")
@@ -153,6 +159,20 @@ def find_matching_items(email):
     return matches
 
 
+def save_notification(to_email, notification):
+    """Persist notification to user's record (prepend to list)."""
+    try:
+        user = users.find_one({"email": to_email})
+        if not user:
+            return
+        existing = user.get("notifications") or []
+        # keep newest first
+        new_list = [notification] + existing
+        users.update_one({"email": to_email}, {"$set": {"notifications": new_list}})
+    except Exception as e:
+        print(f"[Notification Error] failed to persist notification for {to_email}: {e}")
+
+
 @app.route("/api/user/verify", methods=["POST"])
 def user_verify():
     data = request.json or {}
@@ -180,6 +200,19 @@ def user_verify():
         print(f"[Verify] Found {len(matching_items)} matches for {email}")
         for match in matching_items:
             print(f"[Notification] {match['message']}")
+            # emit via socket to user's room (if connected)
+            try:
+                socketio.emit('notification', {'notifications': [match]}, room=email)
+                # persist notification and also emit to recipient (owner of matched item)
+                owner = match.get('ownerEmail')
+                if owner:
+                    save_notification(owner, match)
+                    try:
+                        socketio.emit('notification', {'notifications': [match]}, room=owner)
+                    except Exception as e:
+                        print(f"[Socket Error] emit to owner failed: {e}")
+            except Exception as e:
+                print(f"[Socket Error] emit failed: {e}")
     
     response = {"message": "User verified", "user": user_obj}
     if matching_items:
@@ -194,6 +227,15 @@ def add_item():
     owner = data.get("ownerEmail") or data.get("email")
     if not owner:
         return jsonify({"message": "ownerEmail required"}), 400
+    # basic validation
+    if not data.get("name") or not data.get("name").strip():
+        return jsonify({"message": "Item name required"}), 400
+    if not data.get("description") or not data.get("description").strip():
+        return jsonify({"message": "Description required"}), 400
+    for mfield in ("mobile", "altMobile"):
+        if mfield in data and data[mfield]:
+            if not isinstance(data[mfield], str) or not data[mfield].isdigit() or len(data[mfield]) != 10:
+                return jsonify({"message": f"{mfield} must be exactly 10 digits"}), 400
     # rate limit submissions per user
     cutoff = time.time() - SUBMISSION_WINDOW
     recent_count = items.count_documents({"ownerEmail": owner, "created_at": {"$gte": cutoff}})
@@ -201,6 +243,11 @@ def add_item():
         return jsonify({"message": "Submission limit exceeded"}), 429
     data["claimed"] = False
     data["created_at"] = time.time()
+    # accept mobile numbers if provided
+    if "mobile" in data:
+        data["mobile"] = data.get("mobile")
+    if "altMobile" in data:
+        data["altMobile"] = data.get("altMobile")
     # store image if provided (base64 string)
     if data.get("image"):
         data["image"] = data.get("image")
@@ -273,6 +320,17 @@ def claim_item(name):
     return jsonify(response), 200
 
 
+@socketio.on('join')
+def handle_join(data):
+    email = data.get('email') if isinstance(data, dict) else None
+    if email:
+        try:
+            join_room(email)
+            print(f"[Socket] {email} joined room")
+        except Exception as e:
+            print(f"[Socket] join failed: {e}")
+
+
 @app.route("/api/item/verify/<name>", methods=["POST"])
 def verify_otp(name):
     data = request.json or {}
@@ -288,6 +346,32 @@ def verify_otp(name):
         return jsonify({"message": "OTP expired or not set"}), 400
     if stored == otp:
         items.update_one({"name": name}, {"$set": {"claimed": True, "otp": None, "otp_ts": None}})
+        # notify owner via socket and persist notification
+        try:
+            item_owner = item.get('ownerEmail') or item.get('owner_email')
+            note = {
+                'type': item.get('type'),
+                'name': item.get('name'),
+                'message': f"Your item '{item.get('name')}' was claimed.",
+                'matchScore': 100
+            }
+            if item_owner:
+                # increment claimedCount on owner record
+                try:
+                    users.update_one({"email": item_owner}, {"$inc": {"claimedCount": 1}})
+                except Exception as e:
+                    print(f"[Notify Error] failed to increment claimedCount for {item_owner}: {e}")
+                save_notification(item_owner, note)
+                try:
+                    socketio.emit('notification', {'notifications': [note]}, room=item_owner)
+                except Exception as e:
+                    print(f"[Socket Error] emit claimed notification failed: {e}")
+                try:
+                    socketio.emit('item_claimed', {'name': name}, room=item_owner)
+                except Exception as e:
+                    print(f"[Socket Error] emit item_claimed failed: {e}")
+        except Exception as e:
+            print(f"[Notify Error] failed to notify owner on claim: {e}")
         return jsonify({"message": "OTP verified. Item claimed!"}), 200
     return jsonify({"message": "Invalid OTP"}), 400
 
@@ -305,7 +389,7 @@ def edit_item(name):
         return jsonify({"message": "Not authorized"}), 403
     # update allowed fields
     update = {}
-    for field in ["name", "description", "location", "date", "category", "image"]:
+    for field in ["name", "description", "location", "date", "category", "image", "mobile", "altMobile"]:
         if field in data:
             update[field] = data[field]
     if update:
@@ -380,12 +464,99 @@ UnLost Team
         )
         mail.send(msg)
         print(f"[Notification] Email sent to {to_email} about match for {item_name}")
+        # persist and emit notification
+        note = {"type": item.get('type'), "name": item.get('name'), "message": message, "matchScore": 100}
+        save_notification(to_email, note)
+        try:
+            socketio.emit('notification', {'notifications': [note]}, room=to_email)
+        except Exception as e:
+            print(f"[Socket Error] emit notify_match failed: {e}")
         return jsonify({"message": "Notification sent successfully"}), 200
     except Exception as e:
         print(f"[Email Error] Failed to send notification email to {to_email}: {e}")
         # Still return success even if email fails, since notification was recorded
+        note = {"type": item.get('type'), "name": item.get('name'), "message": message, "matchScore": 100}
+        save_notification(to_email, note)
+        try:
+            socketio.emit('notification', {'notifications': [note]}, room=to_email)
+        except Exception as e2:
+            print(f"[Socket Error] emit notify_match failed after email error: {e2}")
         return jsonify({"message": "Notification recorded (email delivery may have failed)"}), 200
 
 
+@app.route("/api/user/notifications", methods=["GET"])
+def get_notifications():
+    email = request.args.get("email")
+    if not email:
+        return jsonify({"message":"email required"}), 400
+    user = users.find_one({"email": email})
+    notes = user.get("notifications", []) if user else []
+    return jsonify(notes), 200
+
+
+@app.route("/api/user/notifications/clear", methods=["POST"])
+def clear_notifications():
+    data = request.json or {}
+    email = data.get("email")
+    if not email:
+        return jsonify({"message":"email required"}), 400
+    users.update_one({"email": email}, {"$set": {"notifications": []}})
+    return jsonify({"message":"notifications cleared"}), 200
+
+
+@app.route("/api/geocode/reverse", methods=["GET"])
+def reverse_geocode():
+    """Reverse geocoding: coordinates -> address"""
+    lat = request.args.get("lat")
+    lon = request.args.get("lon")
+    
+    if not lat or not lon:
+        return jsonify({"message": "lat and lon required"}), 400
+    
+    try:
+        import requests
+        response = requests.get(
+            f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}",
+            timeout=5
+        )
+        if response.status_code != 200:
+            return jsonify({"message": "Geocoding service error"}), response.status_code
+        data = response.json()
+        address = data.get("display_name", f"{lat}, {lon}")
+        return jsonify({"address": address}), 200
+    except Exception as err:
+        print(f"Reverse geocoding error: {err}")
+        return jsonify({"message": str(err)}), 500
+
+
+@app.route("/api/geocode/search", methods=["GET"])
+def search_geocode():
+    """Forward geocoding: location name -> address"""
+    query = request.args.get("q")
+    
+    if not query or len(query.strip()) == 0:
+        return jsonify({"message": "search query required"}), 400
+    
+    try:
+        import requests
+        response = requests.get(
+            f"https://nominatim.openstreetmap.org/search?format=json&q={query}&limit=1",
+            timeout=5
+        )
+        if response.status_code != 200:
+            return jsonify({"message": "Search service error"}), response.status_code
+        results = response.json()
+        
+        if not results:
+            return jsonify({"message": "Location not found"}), 404
+        
+        result = results[0]
+        address = result.get("display_name", query)
+        return jsonify({"address": address}), 200
+    except Exception as err:
+        print(f"Forward geocoding error: {err}")
+        return jsonify({"message": str(err)}), 500
+
+
 if __name__ == "__main__":
-    app.run(port=int(os.getenv("PORT", 5000)), debug=True)
+    socketio.run(app, port=int(os.getenv("PORT", 5000)), debug=True)

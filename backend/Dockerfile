@@ -13,4 +13,5 @@ COPY . .
 ENV PYTHONUNBUFFERED=1
 EXPOSE 5000
 
-CMD ["gunicorn", "-w", "1", "-b", "0.0.0.0:5000", "app:app"]
+# Use eventlet worker class for Socket.IO compatibility
+CMD ["gunicorn", "-k", "eventlet", "-w", "1", "-b", "0.0.0.0:5000", "app:app"]

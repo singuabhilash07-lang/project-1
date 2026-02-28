@@ -1,5 +1,6 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Menu, X, Plus, Search as SearchIcon, Bell } from 'lucide-react'
+import { io } from 'socket.io-client'
 import RegisterModal from './RegisterModal'
 
 export default function Navbar({ user, setUser, onNavigate, onOpenReport }) {
@@ -9,6 +10,78 @@ export default function Navbar({ user, setUser, onNavigate, onOpenReport }) {
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   
   const notifications = user?.notifications || []
+
+  const socketRef = useRef(null)
+  const [toast, setToast] = useState(null)
+
+  useEffect(() => {
+    // cleanup existing socket if any
+    if (socketRef.current) {
+      socketRef.current.disconnect()
+      socketRef.current = null
+    }
+
+    if (!user?.email) return
+
+    const socket = io()
+    socketRef.current = socket
+
+    socket.on('connect', () => {
+      socket.emit('join', { email: user.email })
+      // fetch persisted notifications to sync state
+      fetch(`/api/user/notifications?email=${encodeURIComponent(user.email)}`)
+        .then(r => r.json())
+        .then(data => {
+          if (Array.isArray(data) && data.length > 0) {
+            const existing = user?.notifications || []
+            const merged = [...data, ...existing]
+            const newUser = { ...user, notifications: merged }
+            try { localStorage.setItem('user', JSON.stringify(newUser)) } catch (e) {}
+            setUser(newUser)
+            setToast({ title: data[0].name || 'Match found', body: data[0].message || '' })
+          }
+        }).catch(() => {})
+    })
+
+    socket.on('notification', (payload) => {
+      const incoming = payload?.notifications || (payload && (Array.isArray(payload) ? payload : [payload]))
+      if (!incoming || incoming.length === 0) return
+      const existing = user?.notifications || []
+      const merged = [...incoming, ...existing]
+      const newUser = { ...user, notifications: merged }
+      try { localStorage.setItem('user', JSON.stringify(newUser)) } catch (e) {}
+      setUser(newUser)
+      // show toast for the first incoming notification
+      try {
+        if (incoming[0]) setToast({ title: incoming[0].name || 'Match found', body: incoming[0].message || '' })
+      } catch (e) {}
+    })
+
+    socket.on('item_claimed', (payload) => {
+      if (!payload) return
+      const name = payload.name || payload.itemName || null
+      if (!name) return
+      try {
+        window.dispatchEvent(new CustomEvent('item_claimed', { detail: { name } }))
+      } catch (e) {}
+      setToast({ title: 'Item claimed', body: `Item ${name} was claimed` })
+    })
+
+    socket.on('connect_error', (err) => {
+      console.error('Socket connect_error', err)
+    })
+
+    return () => {
+      socket.disconnect()
+      socketRef.current = null
+    }
+  }, [user?.email])
+
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(null), 4000)
+    return () => clearTimeout(t)
+  }, [toast])
 
   const handleLogout = () => {
     localStorage.removeItem('user')
@@ -82,8 +155,26 @@ export default function Navbar({ user, setUser, onNavigate, onOpenReport }) {
                       </button>
                       {notificationsOpen && (
                         <div className="absolute right-0 mt-2 w-64 bg-white text-gray-800 rounded-lg shadow-lg z-50 max-h-96 overflow-y-auto">
-                          <div className="px-4 py-3 border-b bg-red-50 font-bold">
-                            📬 {notifications.length} Match{notifications.length !== 1 ? 'es' : ''} Found!
+                          <div className="px-4 py-3 border-b bg-red-50 font-bold flex justify-between items-center">
+                            <span>📬 {notifications.length} Match{notifications.length !== 1 ? 'es' : ''} Found!</span>
+                            <button
+                              className="text-xs text-blue-600 hover:underline"
+                              onClick={async (e) => {
+                                e.stopPropagation()
+                                try {
+                                  await fetch('/api/user/notifications/clear', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ email: user.email })
+                                  })
+                                  const newUser = { ...user, notifications: [] }
+                                  setUser(newUser)
+                                  try { localStorage.setItem('user', JSON.stringify(newUser)) } catch {}
+                                } catch (err) {}
+                              }}
+                            >
+                              Clear all
+                            </button>
                           </div>
                           {notifications.map((notif, i) => (
                             <div key={i} className="px-4 py-3 border-b hover:bg-gray-50 cursor-pointer">
@@ -179,6 +270,13 @@ export default function Navbar({ user, setUser, onNavigate, onOpenReport }) {
           )}
         </div>
       </nav>
+
+      {toast && (
+        <div className="fixed bottom-6 right-6 bg-white shadow-lg rounded-lg p-4 z-50 w-80">
+          <div className="font-bold text-gray-900 truncate">{toast.title}</div>
+          <div className="text-sm text-gray-600 mt-1">{toast.body}</div>
+        </div>
+      )}
 
       <RegisterModal open={registerOpen} onClose={() => setRegisterOpen(false)} onRegistered={setUser} />
     </>

@@ -7,6 +7,7 @@ import Select from '@mui/material/Select'
 import InputLabel from '@mui/material/InputLabel'
 import FormControl from '@mui/material/FormControl'
 import Typography from '@mui/material/Typography'
+import MapPicker from '../components/MapPicker'
 
 export default function ReportPage({ type, user, onSuccess, onCancel, existing }) {
   const [name, setName] = useState(existing?.name || '')
@@ -16,7 +17,10 @@ export default function ReportPage({ type, user, onSuccess, onCancel, existing }
   const [category, setCategory] = useState(existing?.category || 'Other')
   const [imageFile, setImageFile] = useState(null)
   const [imageData, setImageData] = useState(existing?.image || '')
+  const [mobile, setMobile] = useState(existing?.mobile || '')
+  const [altMobile, setAltMobile] = useState(existing?.altMobile || '')
   const [loading, setLoading] = useState(false)
+  const [mapOpen, setMapOpen] = useState(false)
 
   const categories = [
     'Electronics',
@@ -87,7 +91,18 @@ export default function ReportPage({ type, user, onSuccess, onCancel, existing }
       <Box component="form" noValidate autoComplete="off" sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         <TextField label="Item Name" value={name} onChange={e=>setName(e.target.value)} fullWidth />
         <TextField label="Description" multiline rows={3} value={description} onChange={e=>setDescription(e.target.value)} fullWidth />
-        <TextField label="Location" value={location} onChange={e=>setLocation(e.target.value)} fullWidth />
+        <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-start' }}>
+          <TextField label="Location" value={location} onChange={e=>setLocation(e.target.value)} fullWidth />
+          <Button variant="outlined" onClick={() => setMapOpen(true)} sx={{ mt: 1 }}>📍 Map</Button>
+        </Box>
+        <TextField
+          label={type === 'found' ? 'Finder Mobile (your phone)' : 'Your Mobile (owner phone)'}
+          value={mobile}
+          onChange={e => setMobile(e.target.value)}
+          maxLength="10"
+          fullWidth
+        />
+        <TextField label="Alternate Mobile (optional)" value={altMobile} onChange={e=>setAltMobile(e.target.value)} maxLength="10" fullWidth />
         <TextField
           label="Date"
           type="date"
@@ -114,6 +129,10 @@ export default function ReportPage({ type, user, onSuccess, onCancel, existing }
           <Button variant="contained" onClick={handleSubmit} disabled={loading}>Submit</Button>
         </Box>
       </Box>
+      <MapPicker open={mapOpen} onClose={() => setMapOpen(false)} onSelectLocation={(addr, coords) => {
+        setLocation(addr || '')
+      }} />
     </Box>
   )
 }
+

@@ -10,6 +10,7 @@ export default function ItemsHub({ user, onEdit, onDelete }) {
   const [selectedCategory, setSelectedCategory] = useState('all')
   const [loading, setLoading] = useState(true)
   const [selectedItem, setSelectedItem] = useState(null)
+  const [claimedCount, setClaimedCount] = useState(0)
 
   const categories = [
     'All',
@@ -38,6 +39,25 @@ export default function ItemsHub({ user, onEdit, onDelete }) {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    // recompute claimed count when items or user change
+    if (!user) return
+    const count = (items || []).filter(i => (i.ownerEmail === user.email || i.owner_email === user.email) && i.claimed).length
+    setClaimedCount(count)
+  }, [items, user])
+
+  useEffect(() => {
+    const handler = (e) => {
+      const name = e?.detail?.name
+      if (!name) return
+      setItems(prev => prev.filter(i => i.name !== name))
+      setFilteredItems(prev => prev.filter(i => i.name !== name))
+      setClaimedCount(prev => Math.max(0, prev + 1))
+    }
+    window.addEventListener('item_claimed', handler)
+    return () => window.removeEventListener('item_claimed', handler)
+  }, [])
 
   useEffect(() => {
     let result = items
@@ -73,9 +93,15 @@ export default function ItemsHub({ user, onEdit, onDelete }) {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       {/* Hero Section */}
       <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-12">
-        <div className="max-w-7xl mx-auto px-4">
-          <h1 className="text-5xl font-bold mb-2">Lost & Found Hub</h1>
-          <p className="text-xl opacity-90">Help reunite items with their owners</p>
+        <div className="max-w-7xl mx-auto px-4 flex items-center justify-between">
+          <div>
+            <h1 className="text-5xl font-bold mb-2">Lost & Found Hub</h1>
+            <p className="text-xl opacity-90">Help reunite items with their owners</p>
+          </div>
+          <div className="text-right">
+            <div className="text-sm opacity-90">Claimed items</div>
+            <div className="text-2xl font-bold">{claimedCount || 0}</div>
+          </div>
         </div>
       </div>
 
@@ -166,6 +192,12 @@ export default function ItemsHub({ user, onEdit, onDelete }) {
           onClose={() => setSelectedItem(null)}
           onEdit={onEdit}
           onDelete={onDelete}
+          onClaimed={(name) => {
+            // remove claimed item from lists
+            setItems(prev => prev.filter(i => i.name !== name))
+            setFilteredItems(prev => prev.filter(i => i.name !== name))
+            setSelectedItem(null)
+          }}
         />
       )}
     </div>
@@ -245,7 +277,7 @@ function ItemCard({ item, user, onSelect }) {
   )
 }
 
-function ItemDetailModal({ item, onClose, user, onEdit, onDelete }) {
+function ItemDetailModal({ item, onClose, user, onEdit, onDelete, onClaimed }) {
   const itemType = item.type?.toLowerCase() || 'unknown'
   const isLost = itemType === 'lost'
   const isOwner = user && (user.email === item.ownerEmail || user.email === item.owner_email)
@@ -280,6 +312,8 @@ function ItemDetailModal({ item, onClose, user, onEdit, onDelete }) {
       if (!res.ok) return alert(data.message || 'Verify failed')
       alert(data.message)
       setOtpModalOpen(false)
+      // notify parent that item was claimed so UI can remove it
+      if (typeof onClaimed === 'function') onClaimed(item.name)
       onClose()
     } catch (err) {
       alert('Network error')
@@ -353,12 +387,20 @@ function ItemDetailModal({ item, onClose, user, onEdit, onDelete }) {
           </div>
 
           {/* Owner Info */}
-          {(item.ownerEmail || item.owner_email) && (
+          {(item.ownerEmail || item.owner_email || item.mobile || item.altMobile) && (
             <div className="mb-8 bg-blue-50 border-l-4 border-blue-600 p-4 rounded">
               <h3 className="text-sm font-bold text-gray-600 mb-2 flex items-center gap-2">
                 <User size={16} /> Contact Owner
               </h3>
-              <p className="text-gray-900 font-semibold text-lg">{item.ownerEmail || item.owner_email}</p>
+              {item.ownerEmail && (
+                <p className="text-gray-900 font-semibold text-lg">Email: {item.ownerEmail}</p>
+              )}
+              {item.mobile && (
+                <p className="text-gray-900">Mobile: {item.mobile}</p>
+              )}
+              {item.altMobile && (
+                <p className="text-gray-900">Alt mobile: {item.altMobile}</p>
+              )}
             </div>
           )}
 

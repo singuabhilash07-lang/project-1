@@ -6,7 +6,7 @@ import Typography from '@mui/material/Typography'
 import Button from '@mui/material/Button'
 import OTPModal from './OTPModal'
 
-export default function ItemCard({item, user}){
+export default function ItemCard({item, user, onClaimed}){
   const [modalOpen, setModalOpen] = useState(false)
   const [otp, setOtp] = useState('')
   const isOwner = user && (user.email === item.ownerEmail || user.email === item.owner_email)
@@ -34,6 +34,8 @@ export default function ItemCard({item, user}){
       if (!res.ok) return alert(data.message || 'Verify failed')
       alert(data.message)
       setModalOpen(false)
+      // inform parent UI to remove this item if provided
+      if (typeof onClaimed === 'function') onClaimed(item.name)
     } catch (err) {
       alert('Network error')
     }

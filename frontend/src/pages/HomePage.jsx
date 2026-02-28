@@ -19,6 +19,12 @@ export default function HomePage() {
     }
   }, [view])
   const [user, setUser] = useState(() => JSON.parse(localStorage.getItem('user')))
+  const notifications = user?.notifications || []
+  const [showNotif, setShowNotif] = useState(false)
+
+  React.useEffect(() => {
+    if (notifications && notifications.length > 0) setShowNotif(true)
+  }, [user])
   const [reportType, setReportType] = useState(null)
   const [editItem, setEditItem] = useState(null)
 
@@ -100,7 +106,7 @@ export default function HomePage() {
     return (
       <div className="min-h-screen bg-white">
         <Navbar user={user} setUser={setUser} onNavigate={setView} onOpenReport={openReport} />
-        <Profile user={user} setView={setView} />
+        <Profile user={user} setView={setView} setUser={setUser} />
       </div>
     )
   }
@@ -109,6 +115,37 @@ export default function HomePage() {
   return (
     <div className="min-h-screen bg-white">
       <Navbar user={user} setUser={setUser} onNavigate={setView} onOpenReport={openReport} />
+
+      {/* Notification Toast */}
+      {user && showNotif && notifications.length > 0 && (
+        <div className="fixed bottom-6 right-6 z-50 max-w-sm">
+          <div className="bg-white shadow-lg border border-gray-200 rounded-lg p-4">
+            <div className="flex items-start gap-3">
+              <div className="text-2xl">📣</div>
+              <div className="flex-1">
+                <div className="font-bold text-gray-900">Notification</div>
+                <div className="text-sm text-gray-700 mt-1">{notifications[0].message}</div>
+                <div className="text-xs text-gray-500 mt-2">Match Score: {notifications[0].matchScore}%</div>
+                <div className="mt-3 flex gap-2">
+                  <button className="px-3 py-1 bg-blue-600 text-white rounded" onClick={() => {
+                    // go to profile to view more
+                    setView('profile')
+                    setShowNotif(false)
+                  }}>View</button>
+                  <button className="px-3 py-1 border rounded" onClick={() => {
+                    // dismiss this notification
+                    const remaining = (user.notifications || []).slice(1)
+                    const newUser = {...user, notifications: remaining}
+                    setUser(newUser)
+                    localStorage.setItem('user', JSON.stringify(newUser))
+                    if (!remaining.length) setShowNotif(false)
+                  }}>Dismiss</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Hero Section */}
       <section className="relative bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 min-h-screen flex items-center">

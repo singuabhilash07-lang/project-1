@@ -5,3 +5,6 @@ python-dotenv
 flask-mail
 gunicorn
 tinydb
+flask-socketio
+eventlet
+requests
